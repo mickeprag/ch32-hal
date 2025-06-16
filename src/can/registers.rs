@@ -2,11 +2,19 @@ use crate::can::Instance;
 
 const CAN_TX_TIMEOUT: u32 = 0xFFF;
 
+#[cfg(not(ch32l1))]
 pub(crate) struct Registers(pub crate::pac::can::Can);
+#[cfg(ch32l1)]
+pub(crate) struct Registers(pub crate::pac::can::Can, pub crate::pac::can::Canfd);
 
 impl Registers {
+    #[cfg(not(ch32l1))]
     pub fn new<T: Instance>() -> Self {
         Self(T::regs())
+    }
+    #[cfg(ch32l1)]
+    pub fn new<T: Instance>() -> Self {
+        Self(T::regs(), T::fdregs())
     }
 
     pub fn enable_transmit_empty_interrupt(&self, enable: bool) {

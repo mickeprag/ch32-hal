@@ -433,6 +433,9 @@ impl State {
 
 pub trait SealedInstance: RccPeripheral + RemapPeripheral {
     fn regs() -> pac::can::Can;
+    #[cfg(ch32l1)]
+    fn fdregs() -> pac::can::Canfd;
+
     // Either `0b00`, `0b10` or `b11` on CAN1. `0` or `1` on CAN2.
     // fn remap(rm: u8) -> ();
 
@@ -456,6 +459,11 @@ foreach_peripheral!(
                 return unsafe { crate::pac::can::Can::from_ptr(crate::pac::$inst.as_ptr()) };
                 #[cfg(not(ch32l1))]
                 return crate::pac::$inst;
+            }
+
+            #[cfg(ch32l1)]
+            fn fdregs() -> crate::pac::can::Canfd {
+                return unsafe { crate::pac::can::Canfd::from_ptr(crate::pac::$inst.as_ptr()) };
             }
 
             fn state() -> &'static State {
