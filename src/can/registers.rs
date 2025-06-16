@@ -103,6 +103,24 @@ impl Registers {
         });
     }
 
+    #[cfg(ch32l1)]
+    pub fn write_fdframe_mailbox(&self, mailbox_num: usize, frame: &super::CanFDFrame, data_address: u32) {
+        self.1.cr().modify(|w| {
+            w.set_tx_fd(true); // Enable CAN FD mode
+        });
+
+        self.0.txmdtr(mailbox_num).modify(|w| w.set_dlc(frame.dlc as u8)); // Set message length
+        self.1
+            .dma_tx(mailbox_num)
+            .write_value(crate::pac::can::regs::DmaTx(data_address));
+
+        self.0.txmir(mailbox_num).write_value(crate::pac::can::regs::Txmir(0x0)); // Clear CAN TXMIR register
+        self.write_id(mailbox_num, frame.id);
+        self.0.txmir(mailbox_num).modify(|w| {
+            w.set_txrq(true); // Initiate mailbox transfer request
+        });
+    }
+
     pub fn write_id(&self, mailbox_num: usize, id: embedded_can::Id) {
         self.0.txmir(mailbox_num).modify(|w| match id {
             embedded_can::Id::Standard(id) => w.set_stid(id.as_raw()),

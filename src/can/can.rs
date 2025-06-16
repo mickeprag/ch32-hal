@@ -7,6 +7,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use super::enums::*;
 use super::filter::{BitMode, FilterMode};
 use super::{CanFilter, CanFrame};
+use crate::can::frame::CanFDFrame;
 use crate::can::registers::Registers;
 use crate::can::util;
 use crate::internal::drop::OnDrop;
@@ -70,6 +71,8 @@ pub struct Can<'d, T: Instance, M: Mode> {
     #[cfg(feature = "embassy")]
     timeout: embassy_time::Duration,
     bitrate: u32,
+    #[cfg(ch32l1)]
+    fd_tx_mailbox: [[u8; 64]; 3],
     _phantom: PhantomData<(&'d mut T, M)>,
 }
 
@@ -163,22 +166,37 @@ impl<'d, T: Instance> Can<'d, T, Blocking> {
         Self::new_inner(peri, rx, tx, fifo, mode, bitrate, config)
     }
 
+    fn find_free_mailbox(&self) -> Result<usize, CanError> {
+        let regs = Registers::new::<T>();
+        let timeout = self.timeout();
+
+        loop {
+            if let Some(mailbox_num) = regs.find_free_mailbox() {
+                return Ok(mailbox_num);
+            };
+            timeout.check().ok_or(CanError::Timeout)?;
+        }
+    }
+
     /// Puts a frame in the transmit buffer to be sent on the bus.
     ///
     /// If the transmit buffer is full, this function will block until a mailbox becomes available or the timeout is reached.
     fn blocking_transmit(&mut self, frame: &CanFrame) -> Result<(), CanError> {
-        let regs = Registers::new::<T>();
-        let timeout = self.timeout();
+        let mailbox_num = self.find_free_mailbox()?;
 
-        let mailbox_num = loop {
-            if let Some(mailbox_num) = regs.find_free_mailbox() {
-                break mailbox_num;
-            };
-            timeout.check().ok_or(CanError::Timeout)?;
-        };
-        regs.write_frame_mailbox(mailbox_num, frame);
+        Registers::new::<T>().write_frame_mailbox(mailbox_num, frame);
         self.last_mailbox_used = mailbox_num;
         Ok(())
+    }
+
+    /// Puts a fd frame in the transmit buffer to be sent on the bus.
+    ///
+    /// If the transmit buffer is full, this function will block until a mailbox becomes available or the timeout is reached.
+    #[cfg(ch32l1)]
+    pub fn transmit_fd(&mut self, frame: &CanFDFrame) -> Result<(), CanError> {
+        let mailbox_num = self.find_free_mailbox()?;
+
+        self.transmit_fd_inner(mailbox_num, frame)
     }
 
     /// Blocks until a frame was received or an error occurred.
@@ -227,6 +245,20 @@ impl<'d, T: Instance> Can<'d, T, NonBlocking> {
         Ok(None)
     }
 
+    /// Puts a fd frame in the transmit buffer to be sent on the bus.
+    ///
+    /// Returns `Err(WouldBlock)` if the transmit buffer is full and no frame can be
+    /// replaced.
+    pub fn transmit_fd(&mut self, frame: &CanFDFrame) -> nb::Result<(), CanError> {
+        let mailbox_num = match Registers::new::<T>().find_free_mailbox() {
+            Some(n) => n,
+            None => return Err(nb::Error::WouldBlock),
+        };
+
+        self.transmit_fd_inner(mailbox_num, frame)?;
+        Ok(())
+    }
+
     /// Try to read the next message from the queue.
     /// If there are no messages, an error is returned.
     pub fn try_recv(&self) -> nb::Result<CanFrame, CanError> {
@@ -261,6 +293,8 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
             #[cfg(feature = "embassy")]
             timeout: config.timeout,
             bitrate,
+            #[cfg(ch32l1)]
+            fd_tx_mailbox: [[0; 64]; 3],
             _phantom: PhantomData,
         };
         T::enable_and_reset(); // Enable CAN peripheral
@@ -386,6 +420,26 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
             #[cfg(feature = "embassy")]
             deadline: embassy_time::Instant::now() + self.timeout,
         }
+    }
+
+    // Puts a fd frame in the transmit buffer to be sent on the bus. Caller must ensure mailbox_num is valid.
+    #[cfg(ch32l1)]
+    fn transmit_fd_inner(&mut self, mailbox_num: usize, frame: &CanFDFrame) -> Result<(), CanError> {
+        let mailbox = &mut self.fd_tx_mailbox[mailbox_num];
+        mailbox[..frame.data.len()].copy_from_slice(&frame.data);
+
+        let address = mailbox.as_ptr() as u32;
+        // Check alignment of the address
+        if address & 0x3 != 0 {
+            return Err(CanError::Form);
+        }
+
+        Registers::new::<T>().write_fdframe_mailbox(mailbox_num, frame, address);
+        self.last_mailbox_used = mailbox_num;
+
+        // Success in readying packet for transmit. No packets can be replaced in the
+        // transmit buffer so return None in accordance with embedded-can.
+        Ok(())
     }
 }
 
