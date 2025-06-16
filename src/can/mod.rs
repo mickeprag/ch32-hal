@@ -9,4 +9,4 @@ pub use can::{Can, Instance, TxPin, RxPin, ReceiveInterruptHandler, TransmitInte
 pub use embedded_can::{ExtendedId, Id, StandardId};
 pub use enums::{CanError, CanFifo, CanMode, TxStatus};
 pub use filter::{Bit16Mode, Bit32Mode, CanFilter, ListMode, MaskMode};
-pub use frame::CanFrame;
+pub use frame::{CanFrame, CanFDFrame};

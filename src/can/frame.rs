@@ -98,3 +98,50 @@ impl embedded_can::Frame for CanFrame {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct CanFDFrame {
+    pub(crate) id: embedded_can::Id,
+    pub(crate) dlc: usize,
+    pub(crate) data: [u8; 64],
+}
+
+impl CanFDFrame {
+    pub fn new(id: impl Into<embedded_can::Id>, raw_data: &[u8]) -> Option<Self> {
+        let dlc = match raw_data.len() {
+            len @ 0..=8 => len,
+            12 => 9,
+            16 => 10,
+            20 => 11,
+            24 => 12,
+            32 => 13,
+            48 => 14,
+            64 => 15,
+            _ => return None,  // Invalid length
+        };
+
+        let mut data = [0; 64];
+        data[..raw_data.len()].copy_from_slice(raw_data);
+
+        Some(Self {
+            id: id.into(),
+            dlc,
+            data,
+        })
+    }
+
+    /// Return ID
+    pub fn id(&self) -> &embedded_can::Id {
+        &self.id
+    }
+
+    /// Get reference to data
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Return length of `data`
+    pub fn dlc(&self) -> usize {
+        self.dlc
+    }
+}
