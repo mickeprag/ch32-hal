@@ -69,6 +69,7 @@ pub struct Can<'d, T: Instance, M: Mode> {
     last_mailbox_used: usize,
     #[cfg(feature = "embassy")]
     timeout: embassy_time::Duration,
+    bitrate: u32,
     _phantom: PhantomData<(&'d mut T, M)>,
 }
 
@@ -259,6 +260,7 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
             last_mailbox_used: usize::MAX,
             #[cfg(feature = "embassy")]
             timeout: config.timeout,
+            bitrate,
             _phantom: PhantomData,
         };
         T::enable_and_reset(); // Enable CAN peripheral
@@ -297,6 +299,22 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
         Ok(this)
     }
 
+    #[cfg(ch32l1)]
+    pub fn set_fd_data_bitrate(&self, bitrate: u32) {
+        let regs = Registers::new::<T>();
+        if bitrate == self.bitrate {
+            regs.1.cr().modify(|w| {
+                w.set_tx_brs_b(0b000);
+            });
+        } else {
+            unimplemented!("Bitrate switching not implemented");
+            // let Some(bit_timings) = util::calc_can_timings(T::frequency().0, bitrate) else {
+            //     return Err(CanInitError::InvalidTimings);
+            // };
+            // regs.set_fd_bit_timing(bit_timings);
+        }
+    }
+
     /// Each filter bank consists of 2 32-bit registers CAN_FxR0 and CAN_FxR1
     pub fn add_filter<BIT: BitMode, MODE: FilterMode>(&self, filter: CanFilter<BIT, MODE>) {
         let can = T::regs();
@@ -315,8 +333,7 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
 
         can.fmcfgr().modify(|w| w.set_fbm(filter.bank, filter.mode.val_bool())); // Set new filter's operating mode
 
-        can.fafifor()
-            .modify(|w| w.set_ffa(filter.bank, fifo.val_bool())); // Associate CAN's FIFO to new filter
+        can.fafifor().modify(|w| w.set_ffa(filter.bank, fifo.val_bool())); // Associate CAN's FIFO to new filter
 
         can.fwr().modify(|w| w.set_fact(filter.bank, true)); // Activate new filter
 
