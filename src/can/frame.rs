@@ -137,11 +137,26 @@ impl CanFDFrame {
 
     /// Get reference to data
     pub fn data(&self) -> &[u8] {
-        &self.data
+        let length = Self::length_from_dlc(self.dlc);
+        &self.data[..length]
     }
 
     /// Return length of `data`
     pub fn dlc(&self) -> usize {
         self.dlc
+    }
+
+    fn length_from_dlc(dlc: usize) -> usize {
+        match dlc {
+            0..=8 => dlc,
+            9 => 12,
+            10 => 16,
+            11 => 20,
+            12 => 24,
+            13 => 32,
+            14 => 48,
+            15 => 64,
+            _ => 0,
+        }
     }
 }
