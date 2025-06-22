@@ -130,6 +130,22 @@ impl CanFDFrame {
         })
     }
 
+    pub(crate) fn new_from_data_registers(
+        id: impl Into<embedded_can::Id>,
+        dlc: usize,
+        raw_data: &[u8]
+    ) -> Option<Self> {
+        let length = Self::length_from_dlc(dlc);
+        if length > 64 || length == 0 {
+            return None; // Invalid length
+        }
+        if raw_data.len() < length {
+            return None; // Not enough data
+        }
+        let data = raw_data[..length].as_ref();
+        Self::new(id, data)
+    }
+
     /// Return ID
     pub fn id(&self) -> &embedded_can::Id {
         &self.id

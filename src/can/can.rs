@@ -73,6 +73,8 @@ pub struct Can<'d, T: Instance, M: Mode> {
     bitrate: u32,
     #[cfg(ch32l1)]
     fd_tx_mailbox: [[u8; 64]; 3],
+    #[cfg(ch32l1)]
+    fd_rx_mailbox: [u8; 64],
     _phantom: PhantomData<(&'d mut T, M)>,
 }
 
@@ -97,7 +99,7 @@ impl<'d, T: Instance> Can<'d, T, Async> {
         Self::new_inner(peri, rx, tx, fifo, mode, bitrate, config)
     }
 
-    pub async fn receive(&self) -> Result<CanFrame, CanError> {
+    async fn wait_for_frame() -> Result<(), CanError> {
         let on_drop = OnDrop::new(|| {
             // Disable interrupt if the future is canceled
             T::regs().intenr().modify(|w| {
@@ -122,7 +124,15 @@ impl<'d, T: Instance> Can<'d, T, Async> {
         .await?;
         drop(on_drop);
 
+    pub async fn receive(&self) -> Result<CanFrame, CanError> {
+        self.wait_for_frame().await?;
         self.receive_inner()
+    }
+
+    #[cfg(ch32l1)]
+    pub async fn receive_fd(&self) -> Result<CanFDFrame, CanError> {
+        self.wait_for_frame().await?;
+        self.receive_fd_inner()
     }
 
     pub async fn transmit(&mut self, frame: &CanFrame) -> Result<(), CanError> {
@@ -210,6 +220,19 @@ impl<'d, T: Instance> Can<'d, T, Blocking> {
         let frame = self.receive_inner()?;
         Ok(frame)
     }
+
+    /// Blocks until a frame was received or an error occurred.
+    #[cfg(ch32l1)]
+    fn receive_fd(&self) -> Result<CanFDFrame, CanError> {
+        let timeout = self.timeout();
+
+        while Registers::new::<T>().pending_messages(self.fifo) == 0 {
+            timeout.check().ok_or(CanError::Timeout)?;
+        }
+
+        let frame = self.receive_fd_inner()?;
+        Ok(frame)
+    }
 }
 
 impl<'d, T: Instance> Can<'d, T, NonBlocking> {
@@ -271,6 +294,19 @@ impl<'d, T: Instance> Can<'d, T, NonBlocking> {
 
         self.receive_inner().map_err(nb::Error::Other)
     }
+
+    /// Try to read the next message from the queue.
+    /// If there are no messages, an error is returned.
+    pub fn try_recv_fd(&self) -> nb::Result<CanFDFrame, CanError> {
+        let regs = Registers::new::<T>();
+
+        //check pending messages
+        if regs.pending_messages(self.fifo) == 0 {
+            return Err(nb::Error::WouldBlock);
+        }
+
+        self.receive_fd_inner().map_err(nb::Error::Other)
+    }
 }
 
 impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
@@ -295,6 +331,8 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
             bitrate,
             #[cfg(ch32l1)]
             fd_tx_mailbox: [[0; 64]; 3],
+            #[cfg(ch32l1)]
+            fd_rx_mailbox: [0; 64],
             _phantom: PhantomData,
         };
         T::enable_and_reset(); // Enable CAN peripheral
@@ -347,6 +385,9 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
             // };
             // regs.set_fd_bit_timing(bit_timings);
         }
+        regs.1.dma_rx(0).write(|w| {
+            w.set_addr_rx(self.fd_rx_mailbox.as_ptr() as u16);
+        });
     }
 
     /// Each filter bank consists of 2 32-bit registers CAN_FxR0 and CAN_FxR1
@@ -409,6 +450,36 @@ impl<'d, T: Instance, M: Mode> Can<'d, T, M> {
 
         regs.0.rfifo(fifo).write(|w| {
             //set the data was read
+            w.set_rfom(true);
+        });
+
+        Ok(frame)
+    }
+
+    /// Receives a CAN FD frame from the hardware. Caller must make sure that a frame is available
+    /// in the FIFO before calling this method.
+    #[cfg(ch32l1)]
+    fn receive_fd_inner(&self) -> Result<CanFDFrame, CanError> {
+        let regs = Registers::new::<T>();
+        let dlc = regs.0.rxmdtr(self.fifo.val()).read().dlc() as usize;
+
+        let rxmir = regs.0.rxmir(self.fifo.val()).read();
+
+        let id = if rxmir.ide() {
+            let raw_id = ((rxmir.stid() as u32) << 18) | rxmir.exid();
+            embedded_can::Id::from(unsafe { embedded_can::ExtendedId::new_unchecked(raw_id & 0x1FFFFFFF) })
+        } else {
+            embedded_can::Id::Standard(embedded_can::StandardId::new(rxmir.stid()).unwrap())
+        };
+
+        let frame = if let Some(frame) = CanFDFrame::new_from_data_registers(id, dlc, &self.fd_rx_mailbox) {
+            frame
+        } else {
+            return Err(CanError::Form);
+        };
+
+        regs.0.rfifo(self.fifo.val()).write(|w| {
+            // set the data was read
             w.set_rfom(true);
         });
 
